@@ -3,8 +3,9 @@
 // @namespace   tani.github.io
 // @match       *://*/*
 // @grant       none
-// @version     1.0
+// @version     1.1
 // @author      Masaya Taniguchi
+// @run-at      document-idle
 // @description 2023/10/18 22:39:36
 // ==/UserScript==
 
