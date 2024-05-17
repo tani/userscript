@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name        Google Scholar Plus
 // @namespace   tani.github.io
-// @match       *://scholar.google.com/*
-// @match       *://scholar.google.co.jp/*
-// @match       *://scholar.google.jp/*
+// @match       https://scholar.google.com/*
+// @match       https://scholar.google.co.jp/*
+// @match       https://scholar.google.jp/*
 // @version     1.1
 // @author      TANIGUCHI Masaya
 // @description 2020/1/14 10:46:29
