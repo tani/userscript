@@ -4,7 +4,7 @@
 // @match       https://www.reddit.com/*
 // @grant       none
 // @version     1.0
-// @author      -
+// @author      Masaya Taniguchi
 // @description 5/17/2024, 3:59:43 PM
 // ==/UserScript==
 
