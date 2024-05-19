@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name        Google Scholar Plus
-// @namespace   tani.github.io
+// @namespace   masaya.taniguchi
 // @match       https://scholar.google.com/*
 // @match       https://scholar.google.co.jp/*
 // @match       https://scholar.google.jp/*
