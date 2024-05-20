@@ -3,6 +3,7 @@
 // @namespace   masaya.taniguchi
 // @match       https://www.reddit.com/*
 // @match       https://*.zoom.us/j/*
+// @match       https://*.zoom.us/s/*
 // @grant       none
 // @version     1.1
 // @author      Masaya Taniguchi
@@ -18,3 +19,4 @@ function redirect(from, to) {
 
 redirect("www.reddit.com/", "old.reddit.com/")
 redirect("zoom.us/j/", "zoom.us/wc/join/")
+redirect("zoom.us/s/", "zoom.us/wc/join/")
