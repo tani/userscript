@@ -5,7 +5,7 @@
 // @match       https://*.zoom.us/j/*
 // @match       https://*.zoom.us/s/*
 // @grant       none
-// @version     1.1
+// @version     1.2
 // @author      Masaya Taniguchi
 // @description 5/17/2024, 3:59:43 PM
 // @run-at      document-start
