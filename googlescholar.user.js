@@ -4,16 +4,19 @@
 // @match       https://scholar.google.com/*
 // @match       https://scholar.google.co.jp/*
 // @match       https://scholar.google.jp/*
-// @version     1.1
+// @version     1.2
 // @author      TANIGUCHI Masaya
 // @description 2020/1/14 10:46:29
 // @run-at document-idle
 // @grant GM_xmlhttpRequest
 // @grant GM_download
-// @require https://cdn.jsdelivr.net/npm/bibtex-parser-js@0.0.2/bibtexParse.min.js
 // ==/UserScript==
 
-const retrieveBibTeX = (id) => {
+/**
+ * @param id {string}
+ * @return Promise<string>
+ **/
+function retrieveBibTeX(id) {
   return new Promise((resolve) => {
     GM_xmlhttpRequest({
       method: 'GET',
@@ -32,6 +35,16 @@ const retrieveBibTeX = (id) => {
     });
   });
 };
+
+/**
+ * @param bibtex {string}
+ * @return string
+ **/
+function extractCitationKey(bibtex) {
+  const re = /@.*?\{([^,]+),/;
+  const m = bibtex.match(re);
+  return m ? m[1] : null;
+}
 
 document
   .querySelectorAll('[data-cid]:not([id])')
@@ -53,7 +66,7 @@ document
         a.parentNode.setAttribute('ontouchstart', null);
         a.onclick = async () => {
           const bibtex = await retrieveBibTeX(element.dataset.cid);
-          const {citationKey} = bibtexParse.toJSON(bibtex)[0];
+          const citationKey = extractCitationKey(bibtex)
           GM_download(url, `${citationKey.toLowerCase()}.pdf`);
           return false
         }
