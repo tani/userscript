@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Quiet Mosaic — no-flash thumbnail suppression
 // @namespace    quiet-web.local
-// @version      0.9.0
+// @version      2.0.2
 // @description  Suppress thumbnail-like images before they can flash on screen, and collapse the space they leave.
 // @match        http://*/*
 // @match        https://*/*
@@ -10,45 +10,22 @@
 // ==/UserScript==
 
 /*
- * How it works
- *   1. CSS installed at document-start hides every image until it is judged
- *      (opacity 0, so it keeps its size and can still be measured).
- *   2. Once per animation frame, each image is inspected and gets a verdict:
- *        allow  – clearly not a thumbnail (icon, article photo, player…)
- *        hide   – a thumbnail: removed with display:none, together with the
- *                 wrapper that holds nothing but it (badges, placeholders)
- *        wait   – cannot be judged yet; stays invisible
- *   3. Repeating thumbnails reveal "feeds"; everything that later appears in
- *      a feed is collapsed by CSS immediately, before any script runs.
+ * Consecutive similarly sized sibling branches containing media form a feed.
+ * Media in matching branches is collapsed; other media is left visible.
  *
- * Keys
- *   Alt+Shift+Q  on / off
- *   Alt+Shift+D  debug view: nothing hidden, every verdict outlined
- *                (green allow, red hide, gray wait, red dotted wrapper,
- *                amber dashed feed) and a table printed to the console.
+ * Alt+Shift+Q toggles the script; Alt+Shift+D toggles debug outlines.
  */
 (() => {
   'use strict';
 
   const CONFIG = {
-    // Size floor for images outside links to count as thumbnails.
-    minWidth: 92,
-    minHeight: 56,
-    minArea: 6500,
-    // Size floor for images inside links. Ranking-list thumbnails are small
-    // squares; icons and logos below this stay visible.
-    minClickableSide: 40,
-    // Feed detection: at least this many same-shaped thumbnails under one
-    // ancestor, searched this many levels up.
-    minCluster: 4,
+    // Maximum ancestor depth for repeated-card detection.
     maxAncestors: 12,
     maxMedia: 1200,
     // Wrapper collapsing: levels to climb, and how far (px) a badge may
     // stick out of the image and still count as drawn on top of it.
     maxBoxDepth: 10,
     overlayTolerance: 6,
-    // Minimum interval between wrapper re-fits on busy pages (ms).
-    refitInterval: 300,
     // Also kills flashes from CSS-class backgrounds, but removes ALL CSS
     // background images (gradients, UI icons…).
     suppressAllBackgrounds: false,
@@ -58,7 +35,6 @@
 
   const ATTR = {
     root: 'data-quiet-mosaic', // on | off | debug | measure
-    imageSearch: 'data-qm-image-search',
     allow: 'data-qm-allow',
     allowBg: 'data-qm-allow-bg',
     feed: 'data-qm-feed',
@@ -72,7 +48,6 @@
     media: 'img, video, [role="img"]',
     inlineBg: '[style*="background-image"]',
     clickable: 'a[href], [role="link"], button',
-    article: 'article, [role="article"]',
     // Page chrome. <aside> is deliberately absent: sidebars are where
     // ranking and "recommended" lists live.
     chrome: 'header, nav, footer, dialog, [role="navigation"], [role="dialog"], [role="banner"], [role="contentinfo"]',
@@ -84,22 +59,19 @@
   SEL.scan = `${SEL.media}, ${SEL.inlineBg}`;
 
   const SOURCE_ATTRS = ['src', 'srcset', 'poster'];
-  const WATCHED_ATTRS = [...SOURCE_ATTRS, 'style', 'class', 'width', 'height', 'aria-current', 'aria-selected'];
+  const WATCHED_ATTRS = [...SOURCE_ATTRS, 'style', 'class', 'width', 'height'];
 
   // ------------------------------------------------------------ state
 
   const state = {
     mode: 'on',
-    imageSearch: false,
     url: location.href,
     feeds: new Set(),
     boxes: new WeakMap(), // hidden element → collapsed wrapper
-    dirty: false,         // DOM structure changed since the last re-fit
-    lastRefit: 0,
+    dirty: false,         // DOM structure changed since the last scan
   };
   let root;
   let frame = 0;
-  let refitTimer = 0;
   let range;
 
   const enabled = () => state.mode !== 'off';
@@ -123,22 +95,12 @@
     r.left >= frame.left - t && r.top >= frame.top - t &&
     r.right <= frame.right + t && r.bottom <= frame.bottom + t;
 
-  const viewport = () => ({
-    w: Math.max(document.documentElement.clientWidth, innerWidth || 0),
-    h: Math.max(document.documentElement.clientHeight, innerHeight || 0),
-  });
-
   function* ancestors(el, limit = Infinity) {
     for (let p = el.parentElement, depth = 0; p && depth < limit; p = p.parentElement, depth++) {
       if (p === document.body || p === document.documentElement) return;
       yield p;
     }
   }
-
-  const childOf = (parent, el) => {
-    while (el && el.parentElement !== parent) el = el.parentElement;
-    return el;
-  };
 
   const getOrInit = (map, key, make) => {
     if (!map.has(key)) map.set(key, make());
@@ -147,7 +109,7 @@
 
   // ------------------------------------------------------------ styles
 
-  const ON = `html[${ATTR.root}="on"]:not(${marked('imageSearch')})`;
+  const ON = `html[${ATTR.root}="on"]`;
   const DEBUG = `html[${ATTR.root}="debug"]`;
   const outline = (selector, line, offset) =>
     `${DEBUG} ${selector} { outline: ${line} !important; outline-offset: ${offset} !important; }`;
@@ -170,52 +132,12 @@
 
     ${outline(`[${ATTR.why}^="allow"]`, '3px solid #1a7f37', '-3px')}
     ${outline(`[${ATTR.why}^="hide"]`, '3px solid #d1242f', '-3px')}
-    ${outline(`:is([${ATTR.why}^="wait"], [${ATTR.why}^="bg-only"])`, '3px solid #8c959f', '-3px')}
+    ${outline(`[${ATTR.why}^="bg-only"]`, '3px solid #8c959f', '-3px')}
     ${outline(marked('box'), '2px dotted #d1242f', '0')}
     ${outline(marked('feed'), '3px dashed #bf8700', '2px')}
   `;
 
   // ------------------------------------------------------------ inspection
-
-  const isArticleBody = article =>
-    !!article?.querySelector('h1') && article.textContent.length > 700;
-
-  // Safe because of where it sits. Linked images inside an article are not
-  // protected: related-article lists often share the story's <article>.
-  function placeReason(el, rect, clickable) {
-    if (el.closest(SEL.chrome)) return 'chrome';
-    const article = el.closest(SEL.article);
-    if (isArticleBody(article)) {
-      if (!clickable) return 'article';
-      // Click-to-enlarge photo: an image-only link at least half as wide as the story.
-      const width = article.getBoundingClientRect().width;
-      if (!hasText(el.closest(SEL.clickable)) && width > 0 && rect.width >= width / 2) return 'article-photo';
-    }
-    if (!clickable && el.closest('figure')) return 'figure';
-    return '';
-  }
-
-  // Safe because of its size.
-  function sizeReason({ width: w, height: h }, view, clickable, measurable) {
-    const small = clickable
-      ? w < CONFIG.minClickableSide || h < CONFIG.minClickableSide
-      : w < CONFIG.minWidth || h < CONFIG.minHeight || w * h < CONFIG.minArea;
-    if (measurable && small) return 'small';
-    if (w * h > view.w * view.h * 0.6) return 'big';
-    return '';
-  }
-
-  // Safe because of what it is: a hero image or the main video player.
-  // Sites like YouTube draw their own controls, so a large video outside
-  // any link counts as a player; hover previews are far smaller.
-  function roleReason(el, { width: w, height: h }, view, clickable) {
-    if (!clickable && w > view.w * 0.72 && h > view.h * 0.22) return 'standalone';
-    if (el.matches('video') &&
-        (el.controls || (!clickable && (w >= Math.max(480, view.w * 0.4) || h >= view.h * 0.6)))) {
-      return 'player';
-    }
-    return '';
-  }
 
   function inspect(el) {
     const isMedia = el.matches(SEL.media);
@@ -223,90 +145,73 @@
     if (!document.body.contains(el)) return null;
 
     const rect = el.getBoundingClientRect();
-    const view = viewport();
-    const clickable = !!el.closest(SEL.clickable);
-    const measurable = rect.width >= 2 && rect.height >= 2;
-    const offscreen = rect.right < 0 || rect.left > view.w ||
-      rect.bottom < -view.h * 2 || rect.top > view.h * 5;
     const style = getComputedStyle(el);
-    const unrendered = style.display === 'none' || style.visibility === 'hidden' ||
-      style.contentVisibility === 'hidden';
-
-    const locationOrSizeReason = placeReason(el, rect, clickable) ||
-      sizeReason(rect, view, clickable, measurable);
-    const candidate = measurable && !locationOrSizeReason && !offscreen && !unrendered;
-    return {
-      el,
-      rect,
-      isMedia,
-      // Thumbnail-shaped and on screen: eligible for feed detection.
-      candidate,
-      safeWhy: locationOrSizeReason || roleReason(el, rect, view, clickable),
-      waitWhy: !measurable ? 'unmeasured' : offscreen ? 'offscreen' : unrendered ? 'not-rendered' : 'unknown',
-    };
+    const candidate = rect.width >= 2 && rect.height >= 2 &&
+      style.display !== 'none' && style.visibility !== 'hidden' &&
+      style.contentVisibility !== 'hidden';
+    return { el, isMedia, candidate };
   }
 
   function verdict(item, inFeed) {
-    if (inFeed || (item.candidate && !item.safeWhy)) {
-      const where = inFeed ? 'feed' : 'thumb';
-      // An inline-background element carrying text (a banner) keeps its
-      // text; only its background stays suppressed.
-      return item.isMedia || !hasText(item.el) ? `hide:${where}` : `bg-only:${where}`;
-    }
-    return item.safeWhy ? `allow:${item.safeWhy}` : `wait:${item.waitWhy}`;
+    if (!inFeed) return 'allow:outside-feed';
+    // Keep text in background-image cards while suppressing the background.
+    return item.isMedia || !hasText(item.el) ? 'hide:feed' : 'bg-only:feed';
   }
 
   // ------------------------------------------------------------ feeds
 
-  const shapeOf = ({ width: w, height: h }) =>
-    `${Math.round(Math.log2(w / h) * 2)}:${Math.round(Math.log2(w * h) / 1.5)}`;
-
-  function looksLikeFeed(parent, group) {
-    if (group.length < CONFIG.minCluster) return false;
-    const branches = new Set();
-    const tags = new Map();
-    const links = new Set();
-    for (const { el } of group) {
-      const branch = childOf(parent, el);
-      if (branch) {
-        branches.add(branch);
-        tags.set(branch.tagName, (tags.get(branch.tagName) || 0) + 1);
-      }
-      const link = el.closest('a[href]');
-      if (link) links.add(link.href);
-    }
-    return branches.size >= 3 && (Math.max(0, ...tags.values()) >= 3 || links.size >= 3);
-  }
-
-  // Ancestors under which several same-shaped thumbnails repeat; only the
-  // innermost ones, so unrelated content nearby stays usable.
-  function detectFeeds(items) {
-    const groups = new Map(); // ancestor → shape → items
+  // Index candidate media by their ancestor and the direct child branch
+  // containing them. Multiple images in one card count as one branch.
+  function buildMediaTree(items) {
+    const tree = new Map(); // ancestor -> child branches containing media
     for (const item of items) {
       if (!item.candidate) continue;
-      const shape = shapeOf(item.rect);
-      for (const p of ancestors(item.el, CONFIG.maxAncestors)) {
-        if (p.matches(SEL.chrome)) break;
-        getOrInit(getOrInit(groups, p, () => new Map()), shape, () => []).push(item);
+      let branch = item.el;
+      for (const parent of ancestors(item.el, CONFIG.maxAncestors)) {
+        getOrInit(tree, parent, () => new Set()).add(branch);
+        branch = parent;
       }
     }
-    const found = [...groups]
-      .filter(([parent, shapes]) => [...shapes.values()].some(group => looksLikeFeed(parent, group)))
-      .map(([parent]) => parent);
-    return found.filter(el => !found.some(other => other !== el && el.contains(other)));
+    return tree;
   }
 
-  // Feeds are sticky: their collapsed thumbnails can no longer be measured,
-  // so re-detecting from scratch would make them flicker back. They end on
-  // navigation or when removed from the page.
-  function updateFeeds(items) {
+  // Similar computed card dimensions are evidence of a repeated layout.
+  // Eight-pixel buckets tolerate small layout rounding differences.
+  function cardSize(el) {
+    const { width, height } = el.getBoundingClientRect();
+    if (width < 2 || height < 2) return '';
+    return `${Math.round(width / 8)}:${Math.round(height / 8)}`;
+  }
+
+  function detectFeeds(tree) {
+    const found = new Set();
+    for (const [parent, branches] of tree) {
+      let previous;
+      let previousSize = '';
+      for (const branch of parent.children) {
+        const size = branches.has(branch) ? cardSize(branch) : '';
+        if (size && size === previousSize) {
+          found.add(previous);
+          found.add(branch);
+        }
+        previous = branch;
+        previousSize = size;
+      }
+    }
+    // Prefer inner matching branches so unrelated siblings stay visible.
+    const matches = [...found];
+    return matches.filter(el => !matches.some(other => other !== el && el.contains(other)));
+  }
+
+  // Retain feed decisions until the DOM changes or navigation resets them.
+  function updateFeeds(tree) {
     for (const el of state.feeds) {
       if (!el.isConnected) {
         unflag(el, 'feed');
         state.feeds.delete(el);
       }
     }
-    for (const el of detectFeeds(items)) {
+    for (const el of detectFeeds(tree)) {
       flag(el, 'feed', true);
       state.feeds.add(el);
     }
@@ -417,23 +322,6 @@
     setBox(el, el);
   }
 
-  // Badges and titles often arrive after the image, so wrappers are re-fitted
-  // after DOM changes, at most once per refitInterval.
-  function refitIfDirty() {
-    if (!state.dirty) return;
-    const wait = state.lastRefit + CONFIG.refitInterval - performance.now();
-    if (wait > 0) {
-      refitTimer ||= setTimeout(() => {
-        refitTimer = 0;
-        schedule();
-      }, wait);
-      return;
-    }
-    state.dirty = false;
-    state.lastRefit = performance.now();
-    hide([...document.querySelectorAll(`[${ATTR.hide}]`)]);
-  }
-
   function resetDecisions() {
     document.querySelectorAll(`[${ATTR.hide}]`).forEach(unhide);
     for (const el of document.querySelectorAll(`[${ATTR.allow}], [${ATTR.allowBg}], [${ATTR.box}]`)) {
@@ -442,29 +330,6 @@
   }
 
   // ------------------------------------------------------------ scanning
-
-  // Recognize an explicitly selected image-search tab without inspecting URLs.
-  // Restrict the label check to navigation controls on a page with a search UI.
-  function isImageSearch() {
-    if (!document.querySelector('[role="search"], input[type="search"], [role="searchbox"]')) return false;
-    const selected = document.querySelectorAll(
-      '[role="tab"][aria-selected="true"], nav [aria-current="page"], ' +
-      '[role="navigation"] [aria-current="page"], [role="tablist"] [aria-current="page"]'
-    );
-    return [...selected].some(el => {
-      const label = (el.getAttribute('aria-label') || el.textContent).trim();
-      return /^(?:images?|画像(?:検索)?)$/i.test(label);
-    });
-  }
-
-  function updateImageSearch() {
-    const imageSearch = isImageSearch();
-    if (imageSearch === state.imageSearch) return;
-    state.imageSearch = imageSearch;
-    flag(root, 'imageSearch', imageSearch);
-    clearFeeds();
-    resetDecisions();
-  }
 
   function collect() {
     const items = [];
@@ -495,17 +360,16 @@
 
   function scan() {
     if (!enabled() || !document.body) return;
-    if (location.href !== state.url) {
-      // SPA navigation may reuse containers and nodes for a different page.
+    if (state.dirty || location.href !== state.url) {
       state.url = location.href;
+      // New cards can change the sibling sequence, so rebuild decisions.
+      state.dirty = false;
       clearFeeds();
       resetDecisions();
     }
-    updateImageSearch();
-    if (state.imageSearch) return;
-    refitIfDirty();
     const items = collect();
-    updateFeeds(items);
+    const tree = buildMediaTree(items);
+    updateFeeds(tree);
     hide(items.filter(apply).map(item => item.el));
   }
 
