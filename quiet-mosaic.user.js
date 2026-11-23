@@ -230,14 +230,16 @@
     const unrendered = style.display === 'none' || style.visibility === 'hidden' ||
       style.contentVisibility === 'hidden';
 
-    const excuse = placeReason(el, rect, clickable) || sizeReason(rect, view, clickable, measurable);
+    const locationOrSizeReason = placeReason(el, rect, clickable) ||
+      sizeReason(rect, view, clickable, measurable);
+    const candidate = measurable && !locationOrSizeReason && !offscreen && !unrendered;
     return {
       el,
       rect,
       isMedia,
       // Thumbnail-shaped and on screen: eligible for feed detection.
-      candidate: measurable && !excuse && !offscreen && !unrendered,
-      safeWhy: excuse || roleReason(el, rect, view, clickable),
+      candidate,
+      safeWhy: locationOrSizeReason || roleReason(el, rect, view, clickable),
       waitWhy: !measurable ? 'unmeasured' : offscreen ? 'offscreen' : unrendered ? 'not-rendered' : 'unknown',
     };
   }
