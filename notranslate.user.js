@@ -4,8 +4,7 @@
 // @version          1.0
 // ==/UserScript==
 
-
-document.querySelectorAll("math, code").forEach(element => {
-  element.setAttribute("translate", "no");
-  element.classList.add("notranslate");
-});
+for (const element of document.querySelectorAll('math, code')) {
+  element.setAttribute('translate', 'no');
+  element.classList.add('notranslate');
+}
