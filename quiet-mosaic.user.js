@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Quiet Mosaic — no-flash thumbnail suppression
 // @namespace    quiet-web.local
-// @version      0.8.0
+// @version      0.9.0
 // @description  Suppress thumbnail-like images before they can flash on screen, and collapse the space they leave.
 // @match        http://*/*
 // @match        https://*/*
@@ -58,6 +58,7 @@
 
   const ATTR = {
     root: 'data-quiet-mosaic', // on | off | debug | measure
+    imageSearch: 'data-qm-image-search',
     allow: 'data-qm-allow',
     allowBg: 'data-qm-allow-bg',
     feed: 'data-qm-feed',
@@ -83,12 +84,13 @@
   SEL.scan = `${SEL.media}, ${SEL.inlineBg}`;
 
   const SOURCE_ATTRS = ['src', 'srcset', 'poster'];
-  const WATCHED_ATTRS = [...SOURCE_ATTRS, 'style', 'class', 'width', 'height'];
+  const WATCHED_ATTRS = [...SOURCE_ATTRS, 'style', 'class', 'width', 'height', 'aria-current', 'aria-selected'];
 
   // ------------------------------------------------------------ state
 
   const state = {
     mode: 'on',
+    imageSearch: false,
     url: location.href,
     feeds: new Set(),
     boxes: new WeakMap(), // hidden element → collapsed wrapper
@@ -145,7 +147,7 @@
 
   // ------------------------------------------------------------ styles
 
-  const ON = `html[${ATTR.root}="on"]`;
+  const ON = `html[${ATTR.root}="on"]:not(${marked('imageSearch')})`;
   const DEBUG = `html[${ATTR.root}="debug"]`;
   const outline = (selector, line, offset) =>
     `${DEBUG} ${selector} { outline: ${line} !important; outline-offset: ${offset} !important; }`;
@@ -441,6 +443,29 @@
 
   // ------------------------------------------------------------ scanning
 
+  // Recognize an explicitly selected image-search tab without inspecting URLs.
+  // Restrict the label check to navigation controls on a page with a search UI.
+  function isImageSearch() {
+    if (!document.querySelector('[role="search"], input[type="search"], [role="searchbox"]')) return false;
+    const selected = document.querySelectorAll(
+      '[role="tab"][aria-selected="true"], nav [aria-current="page"], ' +
+      '[role="navigation"] [aria-current="page"], [role="tablist"] [aria-current="page"]'
+    );
+    return [...selected].some(el => {
+      const label = (el.getAttribute('aria-label') || el.textContent).trim();
+      return /^(?:images?|画像(?:検索)?)$/i.test(label);
+    });
+  }
+
+  function updateImageSearch() {
+    const imageSearch = isImageSearch();
+    if (imageSearch === state.imageSearch) return;
+    state.imageSearch = imageSearch;
+    flag(root, 'imageSearch', imageSearch);
+    clearFeeds();
+    resetDecisions();
+  }
+
   function collect() {
     const items = [];
     let budget = CONFIG.maxMedia;
@@ -476,6 +501,8 @@
       clearFeeds();
       resetDecisions();
     }
+    updateImageSearch();
+    if (state.imageSearch) return;
     refitIfDirty();
     const items = collect();
     updateFeeds(items);
